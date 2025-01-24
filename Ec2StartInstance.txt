@@ -1,0 +1,68 @@
+import boto3
+
+def lambda_handler(event, context):
+    # Extract parameters from the event
+    auto_scaling_group_name = event.get('auto_scaling_group_name')
+    instance_ids = event.get('instance_ids', [])
+    original_min_size = event.get('original_min_size')
+    original_desired_capacity = event.get('original_desired_capacity')
+    original_max_size = event.get('original_max_size')
+
+    # Validate input
+    if not auto_scaling_group_name or not instance_ids or original_min_size is None or original_desired_capacity is None or original_max_size is None:
+        return {
+            'statusCode': 400,
+            'message': "auto_scaling_group_name, instance_ids, original_min_size, original_desired_capacity, and original_max_size are required in the event payload."
+        }
+
+    # Initialize AWS clients
+    ec2_client = boto3.client('ec2')
+    autoscaling_client = boto3.client('autoscaling')
+
+    try:
+        # Start the stopped instances
+        start_response = ec2_client.start_instances(InstanceIds=instance_ids)
+        print(f"Starting instances: {start_response}")
+
+        # Wait for the instances to be in the 'running' state
+        waiter = ec2_client.get_waiter('instance_running')
+        waiter.wait(InstanceIds=instance_ids)
+        print(f"Instances {instance_ids} are now running.")
+
+        # Resume scaling processes
+        autoscaling_client.resume_processes(
+            AutoScalingGroupName=auto_scaling_group_name,
+            ScalingProcesses=['Launch', 'Terminate', 'ReplaceUnhealthy', 'AZRebalance']
+        )
+        print(f"Scaling processes resumed for Auto Scaling group '{auto_scaling_group_name}'.")
+
+        # Attach the instances back to the Auto Scaling group
+        attach_response = autoscaling_client.attach_instances(
+            InstanceIds=instance_ids,
+            AutoScalingGroupName=auto_scaling_group_name
+        )
+        print(f"Instances attached to Auto Scaling group: {attach_response}")
+
+        
+
+        # Restore the original ASG capacity
+        update_response = autoscaling_client.update_auto_scaling_group(
+            AutoScalingGroupName=auto_scaling_group_name,
+            MinSize=original_min_size,
+            DesiredCapacity=original_desired_capacity,
+            MaxSize=original_max_size
+        )
+        print(f"Updated Auto Scaling group '{auto_scaling_group_name}' sizes to: "
+              f"MinSize={original_min_size}, DesiredCapacity={original_desired_capacity}, MaxSize={original_max_size}")
+
+        return {
+            'statusCode': 200,
+            'message': f"Instances {instance_ids} started, attached to Auto Scaling group, "
+                       f"scaling processes resumed, and ASG capacities restored."
+        }
+    except Exception as e:
+        print(f"Error: {e}")
+        return {
+            'statusCode': 500,
+            'message': f"An error occurred: {str(e)}"
+        }
